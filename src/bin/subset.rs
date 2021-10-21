@@ -1,4 +1,9 @@
 //! A tool for creating a new ufo from a subset of an existing ufo's glyphs.
+//!
+//! This also drops groups, kerning and features.
+//!
+//! (the sole purpose of this script is generating fonts for testing
+//! feature compilation.)
 
 use std::{collections::HashSet, env, ffi::OsStr, path::PathBuf};
 
@@ -7,11 +12,20 @@ fn main() {
     let mut ufo = norad::Font::load(&args.path).unwrap();
     // Prune all non-foreground layers.
     let default_layer_name = ufo.layers.default_layer().name().clone();
-    let to_remove: Vec<_> =
-        ufo.layers.names().filter(|l| *l != &default_layer_name).cloned().collect();
+    let to_remove: Vec<_> = ufo
+        .layers
+        .names()
+        .filter(|l| *l != &default_layer_name)
+        .cloned()
+        .collect();
     for layer_name in to_remove {
         ufo.layers.remove(&layer_name);
     }
+
+    // remove any kerning/groups
+    ufo.kerning = None;
+    ufo.groups = None;
+    ufo.features = None;
 
     let keep_names: HashSet<_> = NAMES_TO_KEEP.iter().cloned().collect();
     let mut to_keep = HashSet::new();
@@ -28,11 +42,33 @@ fn main() {
     let to_delete = ufo
         .default_layer()
         .iter()
-        .filter_map(|g| if to_keep.contains(&g.name) { None } else { Some(g.name.clone()) })
-        .collect::<Vec<_>>();
+        .filter_map(|g| {
+            if to_keep.contains(&g.name) {
+                None
+            } else {
+                Some(g.name.clone())
+            }
+        })
+        .collect::<HashSet<_>>();
 
-    for glyph in to_delete {
+    for glyph in &to_delete {
         ufo.default_layer_mut().remove_glyph(&glyph);
+    }
+
+    if let Some(order) = ufo
+        .lib
+        .get_mut("public.glyphOrder")
+        .and_then(|v| v.as_array_mut())
+    {
+        order.retain(|t| to_keep.contains(t.as_string().unwrap()));
+    }
+
+    if let Some(names) = ufo
+        .lib
+        .get_mut("public.postscriptNames")
+        .and_then(|v| v.as_dictionary_mut())
+    {
+        names.retain(|key, _| to_keep.contains(key.as_str()));
     }
 
     ufo.meta.creator = "org.linebender.norad".to_string();
@@ -64,7 +100,9 @@ impl Args {
         };
 
         let outpath = match args.next().map(PathBuf::from) {
-            Some(path) if path.exists() => exit_err!("outpath {} already exists, exiting", path.display()),
+            Some(path) if path.exists() => {
+                exit_err!("outpath {} already exists, exiting", path.display())
+            }
             None => exit_err!("please supply a destination path"),
             Some(other) => other,
         };
@@ -73,6 +111,8 @@ impl Args {
     }
 }
 static NAMES_TO_KEEP: &[&str] = &[
+    "eacute",
+    "egrave",
     ".notdef",
     "f_f",
     "f_i",
